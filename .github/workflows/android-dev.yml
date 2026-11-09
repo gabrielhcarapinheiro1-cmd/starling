@@ -147,3 +147,5 @@ jobs:
       - name: Remove signing key
         if: always()
         run: rm -f .local/android/debug.keystore
+
+# Build trigger: custom Bedrock-style touch controls for Android ARM64.
