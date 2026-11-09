@@ -436,6 +436,8 @@ impl Placement {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(default = "default_classic_touch")]
+    pub classic_touch: bool,
     pub mode: Mode,
     pub split_controls: bool,
     pub contextual_interact: bool,
@@ -518,6 +520,7 @@ pub struct Settings {
     #[serde(deserialize_with = "deserialize_layouts")]
     pub layouts: [[Placement; 14]; 3],
 }
+fn default_classic_touch() -> bool { cfg!(target_os = "android") }
 fn default_profile_name() -> String {
     "default".into()
 }
@@ -598,6 +601,7 @@ impl Default for Settings {
             row[Control::Attack as usize].passthrough = true;
         }
         Self {
+            classic_touch: cfg!(target_os = "android"),
             mode: Mode::Crosshair,
             split_controls: false,
             contextual_interact: false,

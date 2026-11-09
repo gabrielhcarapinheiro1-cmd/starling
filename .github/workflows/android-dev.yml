@@ -57,12 +57,13 @@ jobs:
           import base64, os
           from pathlib import Path
           value = os.environ.get('DEV_KEYSTORE', '')
-          if not value:
-              raise SystemExit('Set ANDROID_DEV_KEYSTORE_BASE64 first; see docs/android-dev-builds.md')
-          path = Path('.local/android/debug.keystore')
-          path.parent.mkdir(parents=True, exist_ok=True)
-          path.write_bytes(base64.b64decode(value, validate=True))
-          path.chmod(0o600)
+          if value:
+              path = Path('.local/android/debug.keystore')
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(base64.b64decode(value, validate=True))
+              path.chmod(0o600)
+          else:
+              print('No signing secret: android_build.py will generate a temporary debug key')
           PY
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:

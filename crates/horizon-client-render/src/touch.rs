@@ -28,6 +28,8 @@ pub fn set_current_hud_opacity_scale(scale: f32) {
     LAST_HUD_OPACITY_BITS.store(clamped.to_bits(), Ordering::Relaxed);
 }
 
+#[path = "touch/android_touch.rs"]
+mod classic_touch;
 pub mod custom;
 pub mod editor;
 pub use custom::CustomButton;
@@ -184,6 +186,9 @@ enum Role {
 
 pub struct TouchControls {
     pub settings: Settings,
+    classic: classic_touch::TouchControls,
+    classic_keys: std::collections::HashSet<winit::keyboard::KeyCode>,
+    classic_mouse: std::collections::HashSet<winit::event::MouseButton>,
     pub hud_opacity_scale: f32,
     pub force_crosshair: bool,
     pub projectile_crosshair: bool,
@@ -236,6 +241,9 @@ impl Default for TouchControls {
     fn default() -> Self {
         Self {
             settings: Settings::default(),
+            classic: classic_touch::TouchControls::default(),
+            classic_keys: std::collections::HashSet::new(),
+            classic_mouse: std::collections::HashSet::new(),
             hud_opacity_scale: 1.0,
             force_crosshair: false,
             projectile_crosshair: false,
@@ -286,6 +294,9 @@ impl TouchControls {
     }
 
     pub fn update_visibility(&mut self, touch_active: bool, dt: f32) {
+        if self.settings.classic_touch && !touch_active {
+            self.classic.note_hardware();
+        }
         let target = if touch_active || self.editor.is_some() {
             1.0
         } else {
@@ -396,6 +407,9 @@ impl TouchControls {
     }
     /// Inventory overlays retain custom key holds, but never apply world gestures.
     pub fn clear_world_gesture(&mut self) {
+        let _ = self.classic.clear();
+        self.classic_keys.clear();
+        self.classic_mouse.clear();
         self.fingers
             .retain(|_, (role, _)| matches!(role, Role::Ignore));
         self.passthrough_fingers.clear();
@@ -567,6 +581,11 @@ impl TouchControls {
         })
     }
     pub fn draw(&self, b: &mut HudBatch, a: &HudAtlas) {
+        if self.settings.classic_touch && self.editor.is_none() && !self.in_menu {
+            set_current_hud_opacity_scale(1.0);
+            self.classic_draw(b, a);
+            return;
+        }
         set_current_hud_opacity_scale(if self.editor.is_some() {
             1.0
         } else {
@@ -1080,6 +1099,9 @@ impl TouchControls {
         [0.0; 2]
     }
     pub fn clear(&mut self) {
+        let _ = self.classic.clear();
+        self.classic_keys.clear();
+        self.classic_mouse.clear();
         self.cancel_editor_gesture();
         self.inventory_shift = false;
         self.clear_custom();
@@ -1157,7 +1179,99 @@ impl TouchControls {
         }
         self.holding_use = true;
     }
+    /// Adapta o android_touch.rs original para o motor do Starling.
+    /// O controle da interface de menus continua com o TouchUi nativo.
+    pub fn classic_update(&mut self, touch: &winit::event::Touch, size: [u32; 2]) -> [f32; 2] {
+        use winit::keyboard::KeyCode;
+        let mut look = [0.0_f32; 2];
+        for action in self.classic.update(*touch, size, true, false) {
+            match action {
+                classic_touch::Action::Key(key, down) => {
+                    let digits = [
+                        KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3,
+                        KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6,
+                        KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
+                    ];
+                    if let Some(index) = digits.iter().position(|v| *v == key) {
+                        if down {
+                            let token = format!("key.keyboard.{}", index + 1);
+                            self.custom_events.push((token.clone(), true));
+                            self.custom_events.push((token, false));
+                        }
+                    } else if down {
+                        self.classic_keys.insert(key);
+                    } else {
+                        self.classic_keys.remove(&key);
+                    }
+                }
+                classic_touch::Action::Button(button, down) => {
+                    if down { self.classic_mouse.insert(button); }
+                    else { self.classic_mouse.remove(&button); }
+                }
+                classic_touch::Action::Look(dx, dy) => {
+                    look[0] += dx as f32 / size[0].max(1) as f32;
+                    look[1] += dy as f32 / size[1].max(1) as f32;
+                }
+                classic_touch::Action::Pointer(_, _) => {}
+            }
+        }
+        look
+    }
+
+    fn classic_draw(&self, b: &mut HudBatch, atlas: &HudAtlas) {
+        let scale = b.scale.max(0.001);
+        let width = (b.width * scale).round().max(1.0) as u32;
+        let height = (b.height * scale).round().max(1.0) as u32;
+        let col = |c: [f32; 4]| rgba(
+            (c[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (c[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (c[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (c[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+        );
+        for shape in self.classic.shapes([width, height]) {
+            match shape {
+                classic_touch::Shape::Fill(r, color) => {
+                    b.fill(atlas, r.x as f32 / scale, r.y as f32 / scale,
+                        r.w as f32 / scale, r.h as f32 / scale, col(color));
+                }
+                classic_touch::Shape::Label(r, label, color) => {
+                    let (x, y) = (r.x as f32 / scale, r.y as f32 / scale);
+                    let (w, h) = (r.w as f32 / scale, r.h as f32 / scale);
+                    let tw = HudBatch::text_width(atlas, label);
+                    let start = b.vertices.len();
+                    b.text(atlas, label, x + (w - tw) / 2.0,
+                        y + (h - 8.0) / 2.0, col(color), false);
+                    let factor = ((w - 4.0).max(1.0) / tw.max(1.0))
+                        .min((h - 4.0).max(1.0) / 8.0).min(1.0);
+                    b.scale_since(start, x + w / 2.0, y + h / 2.0, factor, factor);
+                }
+            }
+        }
+    }
+
     pub fn state(&self) -> PadState {
+        if self.settings.classic_touch && self.editor.is_none() && !self.in_menu {
+            use winit::event::MouseButton;
+            use winit::keyboard::KeyCode;
+            let mut state = PadState::default();
+            let pressed = |key| self.classic_keys.contains(&key);
+            state.left[0] = (if pressed(KeyCode::KeyD) { 1.0 } else { 0.0 }) - (if pressed(KeyCode::KeyA) { 1.0 } else { 0.0 });
+            state.left[1] = (if pressed(KeyCode::KeyW) { 1.0 } else { 0.0 }) - (if pressed(KeyCode::KeyS) { 1.0 } else { 0.0 });
+            let len = state.left[0].hypot(state.left[1]);
+            if len > 1.0 { state.left = state.left.map(|v| v / len); }
+            state.set(Button::LeftStick, pressed(KeyCode::ControlLeft));
+            state.set(Button::South, pressed(KeyCode::Space));
+            state.set(Button::RightStick, pressed(KeyCode::ShiftLeft));
+            state.set(Button::North, pressed(KeyCode::KeyE));
+            state.set(Button::Start, pressed(KeyCode::Escape));
+            if self.classic_mouse.contains(&MouseButton::Left) {
+                state.triggers[1] = 1.0;
+            }
+            if self.classic_mouse.contains(&MouseButton::Right) {
+                state.triggers[0] = 1.0;
+            }
+            return state;
+        }
         let mut state = PadState::default();
         if (self.settings.sprint_toggle || self.placement(Control::Sprint).toggleable)
             && self.settings.sprint_button
@@ -1933,6 +2047,33 @@ fn line(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn classic_input_preserves_simultaneous_movement_and_jump() {
+        use super::*;
+        use winit::event::{DeviceId, Touch, TouchPhase};
+        use winit::dpi::PhysicalPosition;
+        let mut controls = TouchControls::default();
+        controls.settings.classic_touch = true;
+        controls.viewport(1000, 1000);
+        let event = |id, phase, x, y| Touch {
+            device_id: DeviceId::dummy(),
+            phase,
+            location: PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        };
+        controls.classic_update(&event(1, TouchPhase::Started, 120.0, 700.0), [1000, 1000]);
+        controls.classic_update(&event(2, TouchPhase::Started, 860.0, 860.0), [1000, 1000]);
+        let both = controls.state();
+        assert!(both.left[0] < 0.0 && both.left[1] > 0.0);
+        assert!(both.held(Button::South));
+        controls.classic_update(&event(2, TouchPhase::Ended, 860.0, 860.0), [1000, 1000]);
+        assert!(!controls.state().held(Button::South));
+        assert!(controls.state().left[1] > 0.0);
+        controls.clear();
+        assert_eq!(controls.state().left, [0.0; 2]);
+    }
+
     #[test]
     fn joystick_active_zones_mirror_with_left_handed_layouts() {
         for (area, start) in [

@@ -15143,7 +15143,10 @@ impl Game<'_> {
                 self.pad.touch.break_progress = self.touch_mining_progress();
                 self.pad.touch.draw(&mut hud, &self.gui.atlas);
             }
-            if !self.settings.keypad.enabled && (in_menu || !self.ui.hide_gui) {
+            if !self.settings.keypad.enabled
+                && (in_menu || !self.ui.hide_gui)
+                && (in_menu || !self.pad.touch.settings.classic_touch)
+            {
                 horizon_client::touch_ui::draw_goy_hud(
                     &self.pad.touch,
                     &mut hud,
@@ -16407,6 +16410,9 @@ impl Game<'_> {
         | WindowEvent::MouseWheel { device_id, .. } = &event
             && winit::platform::android::native_pointer_device(*device_id)
         {
+            if self.pad.touch.settings.classic_touch {
+                crate::touch_input(false);
+            }
             let accepted = horizon_client::android_runtime::note_input(
                 horizon_client::android_gamepad::InputMode::KeyboardMouse,
             );
@@ -16636,12 +16642,16 @@ impl Game<'_> {
                 }
                 return;
             }
-            match self.android_aux_touch(touch, event_loop, id) {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(error) => {
-                    log::error!("Android input: {error}");
-                    return;
+            // O perfil classico usa apenas os dedos/controles enviados pelo usuario.
+            // O sistema auxiliar original permanece ativo nos menus.
+            if !self.pad.touch.settings.classic_touch || self.pad_in_menu() {
+                match self.android_aux_touch(touch, event_loop, id) {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::error!("Android input: {error}");
+                        return;
+                    }
                 }
             }
             if touch.phase == TouchPhase::Cancelled {
@@ -16745,10 +16755,11 @@ impl Game<'_> {
                     ];
                     if let Some(slot) =
                         horizon_client::touch::hotbar_slot(batch.width, batch.height, point)
-                        && !self.pad.touch.control_at_point([
-                            touch.location.x as f32 / size.width.max(1) as f32,
-                            touch.location.y as f32 / size.height.max(1) as f32,
-                        ])
+                        && (self.pad.touch.settings.classic_touch
+                            || !self.pad.touch.control_at_point([
+                                touch.location.x as f32 / size.width.max(1) as f32,
+                                touch.location.y as f32 / size.height.max(1) as f32,
+                            ]))
                     {
                         self.selected = slot;
                         self.pad.touch.ignore(touch.id);
@@ -16759,15 +16770,19 @@ impl Game<'_> {
                     self.pad.touch.projectile_crosshair = self.touch_projectile_crosshair();
                     self.pad.touch.hold_uses_item = self.touch_item_held_use();
                 }
-                let raw_delta = self.pad.touch.update(
-                    touch.id,
-                    [
-                        touch.location.x as f32 / size.width.max(1) as f32,
-                        touch.location.y as f32 / size.height.max(1) as f32,
-                    ],
-                    touch.phase == TouchPhase::Started,
-                    matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled),
-                );
+                let raw_delta = if self.pad.touch.settings.classic_touch {
+                    self.pad.touch.classic_update(touch, [size.width, size.height])
+                } else {
+                    self.pad.touch.update(
+                        touch.id,
+                        [
+                            touch.location.x as f32 / size.width.max(1) as f32,
+                            touch.location.y as f32 / size.height.max(1) as f32,
+                        ],
+                        touch.phase == TouchPhase::Started,
+                        matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled),
+                    )
+                };
                 if self.pad.touch.has_pending_key_events() {
                     self.android_custom_events();
                 }
